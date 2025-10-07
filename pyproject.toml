@@ -3,9 +3,9 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "emacs-paw"
-version = "0.1.18"
+version = "0.1.19"
 description = "Study for a life in Emacs with advanced annotation and language learning tools."
-readme = "README_PAW_CLI.md"
+readme = "README.md"
 authors = [{ name = "Damon Chan" }]
 license = { file = "LICENSE" }
 keywords = ["Emacs", "annotation", "language learning", "dictionary", "sql", "org-mode"]
