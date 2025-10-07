@@ -1,6 +1,6 @@
 # paw_server - paw Python Command Line Interface
 
-[paw (Point-And-Write)](https://github.com/chenyanming/paw) paw server eval commands on Emacs using emacsclient or org-protocol
+[paw server](https://github.com/chenyanming/paw_server) eval commands on Emacs using emacsclient or org-protocol
 
 This repository contains the Python CLI tool and server components that work with [paw.el](https://github.com/chenyanming/paw), providing advanced annotation and language learning tools for Emacs.
 
