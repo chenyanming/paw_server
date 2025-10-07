@@ -1,12 +1,12 @@
-#+title: paw_server - PAW Python Command Line Interface
+# paw_server - paw Python Command Line Interface
 
-[[https://github.com/chenyanming/paw][PAW (Point-And-Write)]] Python Command Line Interface and Server Components.
+[paw (Point-And-Write)](https://github.com/chenyanming/paw) paw server eval commands on Emacs using emacsclient or org-protocol
 
-This repository contains the Python CLI tool and server components that work with [[https://github.com/chenyanming/paw][paw.el]], providing advanced annotation and language learning tools for Emacs.
+This repository contains the Python CLI tool and server components that work with [paw.el](https://github.com/chenyanming/paw), providing advanced annotation and language learning tools for Emacs.
 
-* Overview
+## Overview
 
-~paw_server~ is the Python backend for the PAW (Point-And-Write) system, providing:
+`paw_server` is the Python backend for the PAW (Point-And-Write) system, providing:
 
 - Command line interface for dictionary searches and language processing
 - HTTP server for Emacs integration
@@ -14,39 +14,39 @@ This repository contains the Python CLI tool and server components that work wit
 - Database-driven annotation and vocabulary management
 - Integration with external services like Wallabag
 
-* Installation
+## Installation
 
-** Python Dependencies
+### Python Dependencies
 
 Install the PAW CLI tool:
 
-#+begin_src sh
+```sh
 pip install emacs-paw
-#+end_src
+```
 
 Additional NLTK data:
 
-#+begin_src sh
+```sh
 python -m nltk.downloader stopwords
 python -m nltk.downloader punkt
-#+end_src
+```
 
-* Usage
+## Usage
 
-** Available Commands
+### Available Commands
 
-- ~run_server~: Start the PAW server for handling annotation requests (designed for Emacs integration)
-- ~server~: Start the PAW server in standalone mode with enhanced features
-- ~en_search~: Search in English dictionaries
-- ~ja_search~: Search in Japanese dictionaries
-- ~ja_segment~: Japanese text segmentation
-- ~check_language~: Detect language of given text
+- `run_server`: Start the PAW server for handling annotation requests (designed for Emacs integration)
+- `server`: Start the PAW server in standalone mode with enhanced features
+- `en_search`: Search in English dictionaries
+- `ja_search`: Search in Japanese dictionaries
+- `ja_segment`: Japanese text segmentation
+- `check_language`: Detect language of given text
 
-** Server Operations
+### Server Operations
 
-*** Start PAW Server (Emacs Integration Mode)
+#### Start PAW Server (Emacs Integration Mode)
 
-#+begin_src sh
+```sh
 paw run_server --database /home/user/org/paw.sqlite \
                --save-dir /tmp/source.html \
                --port 5001 \
@@ -55,13 +55,13 @@ paw run_server --database /home/user/org/paw.sqlite \
                --wallabag-password password \
                --wallabag-clientid clientid \
                --wallabag-secret secret
-#+end_src
+```
 
-*** Start PAW Server (Standalone Mode)
+#### Start PAW Server (Standalone Mode)
 
 Using command line arguments:
 
-#+begin_src sh
+```sh
 paw server --database /home/user/org/paw.sqlite \
            --save-dir /tmp/ \
            --port 5001 \
@@ -71,11 +71,11 @@ paw server --database /home/user/org/paw.sqlite \
            --wallabag-password password \
            --wallabag-clientid clientid \
            --wallabag-secret secret
-#+end_src
+```
 
 Using environment variables (recommended for production):
 
-#+begin_src sh
+```sh
 export PAW_DATABASE_PATH="/home/user/org/paw.sqlite"
 export PAW_SAVE_DIR="/tmp/"
 export PAW_PORT="5001"
@@ -87,62 +87,93 @@ export WALLABAG_CLIENTID="your_client_id"
 export WALLABAG_SECRET="your_client_secret"
 
 paw server
-#+end_src
+```
 
-** Dictionary Operations
+**Server Options:**
+- `--database`: Path to SQLite database file (env: PAW_DATABASE_PATH)
+- `--save-dir`: Directory to save files (env: PAW_SAVE_DIR)
+- `--port`: Server port (env: PAW_PORT, default: 5001)
+- `--server-type`: Server type - 'flask' or 'production' (env: PAW_SERVER_TYPE, default: flask)
+- `--wallabag-*`: Wallabag configuration (env: WALLABAG_HOST, WALLABAG_USERNAME, etc.)
 
-*** English Dictionary Search
+### Dictionary Operations
 
-#+begin_src sh
+#### English Dictionary Search
+
+```sh
 paw en_search /home/user/org/stardict.db MATCH hello \
               --tag "" \
               --wordlists /home/user/org/5000.csv \
               --known-words-files /home/user/org/eudic.csv,/home/user/org/english.txt
-#+end_src
+```
 
-*** Japanese Dictionary Search
+#### Japanese Dictionary Search
 
-#+begin_src sh
+```sh
 paw ja_search /home/user/org/japanese.db MATCH "海外の大企業は" \
               --tag "" \
               --wordlist /home/user/org/蓝宝书日语文法.csv \
               --known-words-files /home/user/org/japanese.txt
-#+end_src
+```
 
-*** Japanese Text Segmentation
+#### Japanese Text Segmentation
 
-#+begin_src sh
+```sh
 paw ja_segment "実在の女性を骨抜きにしたオスたちの話だけを紹介しており"
-#+end_src
+```
 
-Returns JSON with segmentation details including surface form, base form, and reading.
+Returns JSON with segmentation details including surface form, base form, and reading:
 
-*** Language Detection
+```json
+[
+  {
+    "surface": "実在",
+    "base_form": "実在",
+    "reading": "ジツザイ"
+  },
+  {
+    "surface": "の",
+    "base_form": "の",
+    "reading": "ノ"
+  },
+  {
+    "surface": "女性",
+    "base_form": "女性",
+    "reading": "ジョセイ"
+  }
+]
+```
 
-#+begin_src sh
+- `surface`: for segmentation
+- `base_form`: for dictionary checking
+- `reading`: for online sound service
+
+#### Language Detection
+
+```sh
 paw check_language --languages "english,chinese,japanese" \
                    --text "これは日本語の文です"
-#+end_src
+```
 
-* Production Deployment
+## Production Deployment
 
-** Environment Variables
+### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| ~PAW_DATABASE_PATH~ | Path to SQLite database | None |
-| ~PAW_SAVE_DIR~ | Directory to save files | ~/tmp~ |
-| ~PAW_PORT~ | Server port | ~5001~ |
-| ~PAW_SERVER_TYPE~ | Server type (flask/production) | ~flask~ |
-| ~WALLABAG_HOST~ | Wallabag server URL | None |
-| ~WALLABAG_USERNAME~ | Wallabag username | None |
-| ~WALLABAG_PASSWORD~ | Wallabag password | None |
-| ~WALLABAG_CLIENTID~ | Wallabag client ID | None |
-| ~WALLABAG_SECRET~ | Wallabag client secret | None |
+| `PAW_DATABASE_PATH` | Path to SQLite database | None |
+| `PAW_SAVE_DIR` | Directory to save files | `/tmp` |
+| `PAW_PORT` | Server port | `5001` |
+| `PAW_SERVER_TYPE` | Server type (flask/production) | `flask` |
+| `WALLABAG_HOST` | Wallabag server URL | None |
+| `WALLABAG_USERNAME` | Wallabag username | None |
+| `WALLABAG_PASSWORD` | Wallabag password | None |
+| `WALLABAG_CLIENTID` | Wallabag client ID | None |
+| `WALLABAG_SECRET` | Wallabag client secret | None |
 
-** Production Deployment with Waitress
+### Production Deployment with Waitress
 
-#+begin_src sh
+```sh
 # Install waitress
 pip install waitress
 
@@ -161,9 +192,9 @@ export WALLABAG_SECRET="your_client_secret"
 
 # Run the server
 paw server
-#+end_src
+```
 
-* Features
+## Features
 
 - **Enhanced Stability**: Improved error handling and automatic database reconnection
 - **Environment Variable Support**: All configuration via environment variables
@@ -174,20 +205,20 @@ paw server
 - **Multi-language Support**: English, Japanese, and Chinese language processing
 - **Dictionary Integration**: Support for various dictionary formats and sources
 
-* Integration with PAW.el
+## Integration with PAW.el
 
-This server component is designed to work seamlessly with [[https://github.com/chenyanming/paw][paw.el]], the Emacs annotation and language learning system. The server provides:
+This server component is designed to work seamlessly with [paw.el](https://github.com/chenyanming/paw), the Emacs annotation and language learning system. The server provides:
 
 - Real-time dictionary lookups
 - Language processing services
 - Annotation storage and retrieval
 - Wallabag integration for web content management
 
-* Development
+## Development
 
-** Project Structure
+### Project Structure
 
-#+begin_src
+```
 paw_server/
 ├── paw/
 │   ├── __init__.py
@@ -197,11 +228,10 @@ paw_server/
 │   ├── paw_jlpt.py         # Japanese language processing (JLPT)
 │   └── paw_mecab.py        # MeCab integration for Japanese
 ├── pyproject.toml          # Project configuration
-├── README_PAW_CLI.md       # Detailed CLI documentation
-└── README.org              # This file
-#+end_src
+└── README.md               # This file
+```
 
-** Dependencies
+### Dependencies
 
 - Python 3.10+
 - Flask & Flask-CORS for web server
@@ -211,15 +241,15 @@ paw_server/
 - Requests for HTTP client functionality
 - Lingua for language detection
 
-* License
+## License
 
 This project is licensed under the GNU General Public License v3.0.
 
-* Author
+## Author
 
 Damon Chan
 
-* Related Projects
+## Related Projects
 
-- [[https://github.com/chenyanming/paw][PAW.el]] - The main Emacs package for annotation and language learning
-- [[https://github.com/chenyanming/paw_org_protocol][PAW Org Protocol]] - Browser integration for PAW
+- [paw.el](https://github.com/chenyanming/paw) - The main Emacs package for annotation and language learning
+- [paw Browser extension](https://github.com/chenyanming/paw_browser_extension) - Chrome/Firefox extension for eval Emacs commands or org-protocol on browser
