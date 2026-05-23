@@ -112,9 +112,9 @@ server-standalone: install-deps
 	@echo "🚀 Starting PAW server in standalone mode..."
 	@$(PYTHON) -m paw.paw_server
 
-# Start server with production WSGI server (high performance)
+# Start server with production ASGI server (HTTP + WebSocket)
 server-production: install-deps
-	@echo "🚀 Starting PAW server with production WSGI server..."
+	@echo "🚀 Starting PAW server with production ASGI server..."
 	@export PAW_SERVER_TYPE="production" && \
 	 $(PYTHON) -m paw.paw_server
 
@@ -188,7 +188,7 @@ quick-setup: install-deps
 	@echo "⚡ Quick setup complete!"
 	@echo "Available commands:"
 	@echo "  make server          - Start PAW server (auto-detect best method)"
-	@echo "  make server-production - Start with production WSGI server"
+	@echo "  make server-production - Start with production ASGI server"
 	@echo "  make server-uvx      - Start with uvx (isolated environment)"
 	@echo "  make test            - Run tests"
 
@@ -207,7 +207,7 @@ help:
 	@echo "🚀 Server Management:"
 	@echo "  make server          - Start server (auto-detect best method)"
 	@echo "  make server-standalone - Start standalone server"
-	@echo "  make server-production - Start with production WSGI server"
+	@echo "  make server-production - Start with production ASGI server"
 	@echo "  make server-uvx      - Start with uvx (isolated)"
 	@echo "  make server-stop     - Stop running server"
 	@echo "  make server-status   - Check server status"
@@ -228,7 +228,7 @@ help:
 	@echo "  PAW_DATABASE_PATH    - Database file path"
 	@echo "  PAW_SAVE_DIR         - Upload directory"
 	@echo "  PAW_PORT             - Server port (default: 5001)"
-	@echo "  PAW_SERVER_TYPE      - Server type: flask/production"
+	@echo "  PAW_SERVER_TYPE      - Server type: flask/production/waitress"
 	@echo "  WALLABAG_*           - Wallabag configuration variables"
 	@echo ""
 	@echo "💡 Usage Examples:"

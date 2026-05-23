@@ -10,8 +10,27 @@ import json
 import threading
 import time
 import signal
+import uuid
+import asyncio
 from datetime import datetime
 import logging
+
+try:
+    from flask_sock import Sock
+except ImportError:
+    Sock = None
+
+try:
+    from simple_websocket import Server as SimpleWebSocketServer
+    from simple_websocket.errors import ConnectionClosed
+except ImportError:
+    SimpleWebSocketServer = None
+    ConnectionClosed = None
+
+try:
+    from asgiref.wsgi import WsgiToAsgi
+except ImportError:
+    WsgiToAsgi = None
 
 
 class Paw:
@@ -105,6 +124,8 @@ class Paw:
 
 app = Flask(__name__)
 CORS(app)
+sock = Sock(app) if Sock else None
+websocket_available = bool(sock or SimpleWebSocketServer or WsgiToAsgi)
 # Example usage of the parsed arguments
 database = None
 save_dir = None
@@ -117,7 +138,323 @@ wallabag_secret = None
 wallabag_token = None  # This will be set after requesting a token
 paw = None
 
+media_lock = threading.Lock()
+media_pending = {}
+media_ws = None
+media_last_status = None
+media_last_status_by_key = {}
+
 SECRET_TOKEN = "your-secure-token"
+
+def media_empty_status(last_error="no-media-cache"):
+    return {
+        "ok": True,
+        "source": "empty",
+        "stale": True,
+        "provider": None,
+        "mediaId": None,
+        "url": None,
+        "title": None,
+        "currentTimeMs": 0,
+        "durationMs": 0,
+        "remainingMs": 0,
+        "paused": True,
+        "playbackRate": 1.0,
+        "canControl": False,
+        "updatedAtMs": 0,
+        "lastError": last_error,
+    }
+
+def normalize_media_status(data, source="fresh", stale=False, last_error=None):
+    now = int(time.time() * 1000)
+    current = int(data.get("currentTimeMs") or 0)
+    duration = int(data.get("durationMs") or 0)
+    remaining = data.get("remainingMs")
+    if remaining is None:
+        remaining = max(0, duration - current)
+
+    return {
+        "ok": True,
+        "source": source,
+        "stale": stale,
+        "provider": data.get("provider"),
+        "mediaId": data.get("mediaId"),
+        "url": data.get("url"),
+        "title": data.get("title"),
+        "currentTimeMs": current,
+        "durationMs": duration,
+        "remainingMs": int(remaining or 0),
+        "paused": bool(data.get("paused", True)),
+        "playbackRate": float(data.get("playbackRate") or 1.0),
+        "canControl": bool(data.get("canControl", False)) and not stale,
+        "updatedAtMs": int(data.get("updatedAtMs") or now),
+        "lastError": last_error,
+    }
+
+def media_cache_key(target_url=None):
+    return target_url or "__default__"
+
+def media_cached_status(last_error, target_url=None):
+    global media_last_status
+    key = media_cache_key(target_url)
+    with media_lock:
+        keyed = media_last_status_by_key.get(key)
+        if target_url:
+            cached = dict(keyed) if keyed else None
+        else:
+            cached = dict(keyed or media_last_status) if (keyed or media_last_status) else None
+
+    if not cached:
+        return media_empty_status(last_error)
+
+    cached["source"] = "cache"
+    cached["stale"] = True
+    cached["paused"] = True
+    cached["canControl"] = False
+    cached["lastError"] = last_error
+    return cached
+
+def store_media_status(status, target_url=None):
+    global media_last_status
+    key = media_cache_key(target_url)
+    with media_lock:
+        media_last_status = dict(status)
+        media_last_status_by_key[key] = dict(status)
+    logging.debug(
+        "media cache updated key=%s provider=%s title=%r current=%sms duration=%sms paused=%s",
+        key,
+        status.get("provider"),
+        status.get("title"),
+        status.get("currentTimeMs"),
+        status.get("durationMs"),
+        status.get("paused"),
+    )
+
+def env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+def get_media_ws():
+    with media_lock:
+        return media_ws
+
+def fulfill_media_request(message):
+    request_id = message.get("requestId")
+    if not request_id:
+        logging.debug("media response ignored: missing requestId")
+        return
+
+    with media_lock:
+        pending = media_pending.get(request_id)
+
+    if pending:
+        pending["response"] = message
+        pending["event"].set()
+        logging.debug(
+            "media response received requestId=%s ok=%s canControl=%s provider=%s error=%s",
+            request_id,
+            message.get("ok"),
+            message.get("canControl"),
+            message.get("provider"),
+            message.get("error"),
+        )
+    else:
+        logging.debug("media response ignored: no pending requestId=%s", request_id)
+
+class AsgiMediaWebSocket:
+    def __init__(self, send, loop):
+        self.send_asgi = send
+        self.loop = loop
+
+    def send(self, data):
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_asgi({"type": "websocket.send", "text": data}),
+            self.loop,
+        )
+        future.result(timeout=5)
+
+def media_ws_loop(ws):
+    global media_ws
+    with media_lock:
+        media_ws = ws
+    logging.info("media websocket connected")
+
+    try:
+        while True:
+            try:
+                raw = ws.receive()
+            except Exception as e:
+                if ConnectionClosed and isinstance(e, ConnectionClosed):
+                    logging.info("media websocket closed: code=%s reason=%s", e.reason, e.message)
+                    break
+                raise
+            if raw is None:
+                break
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                logging.warning("media websocket received invalid JSON")
+                continue
+            if message.get("type") == "media.response":
+                fulfill_media_request(message)
+            else:
+                logging.debug("media websocket message type=%s", message.get("type"))
+    finally:
+        with media_lock:
+            if media_ws is ws:
+                media_ws = None
+        logging.info("media websocket disconnected")
+
+@app.route("/media/request", methods=["POST"])
+def media_request_endpoint():
+    if not websocket_available:
+        logging.warning("media request failed: websocket dependency missing")
+        return jsonify(media_cached_status("websocket-dependency-missing"))
+
+    data = request.json or {}
+    request_id = data.get("requestId") or str(uuid.uuid4())
+    timeout_ms = min(int(data.get("timeoutMs") or 800), 1200)
+    event = threading.Event()
+
+    message = {
+        "type": "media.request",
+        "requestId": request_id,
+        "target": data.get("target") or "active-or-last",
+        "action": data.get("action") or "status",
+        "deltaMs": data.get("deltaMs"),
+        "positionMs": data.get("positionMs"),
+        "targetUrl": data.get("targetUrl") or data.get("url"),
+        "mediaId": data.get("mediaId"),
+        "timeoutMs": timeout_ms,
+    }
+    target_url = message.get("targetUrl")
+
+    ws = get_media_ws()
+    if ws is None:
+        logging.debug(
+            "media request using cache: extension unavailable action=%s requestId=%s",
+            message["action"],
+            request_id,
+        )
+        return jsonify(media_cached_status("extension-unavailable", target_url))
+
+    with media_lock:
+        media_pending[request_id] = {"event": event, "response": None}
+
+    try:
+        logging.debug(
+            "media request send action=%s target=%s requestId=%s timeoutMs=%s",
+            message["action"],
+            message.get("targetUrl") or message["target"],
+            request_id,
+            timeout_ms,
+        )
+        ws.send(json.dumps(message))
+    except Exception as e:
+        with media_lock:
+            media_pending.pop(request_id, None)
+        logging.warning("media request send failed requestId=%s error=%s", request_id, e)
+        return jsonify(media_cached_status(f"extension-send-failed:{e}", target_url))
+
+    if not event.wait(timeout_ms / 1000.0):
+        with media_lock:
+            media_pending.pop(request_id, None)
+        logging.debug("media request timeout action=%s requestId=%s", message["action"], request_id)
+        return jsonify(media_cached_status("extension-timeout", target_url))
+
+    with media_lock:
+        pending = media_pending.pop(request_id, None)
+
+    response = pending.get("response") if pending else None
+    if not response or not response.get("ok") or not response.get("canControl"):
+        logging.debug(
+            "media request using cache: no controllable media action=%s requestId=%s response=%s",
+            message["action"],
+            request_id,
+            response,
+        )
+        return jsonify(media_cached_status((response or {}).get("error") or "no-media", target_url))
+
+    status = normalize_media_status(response)
+    store_media_status(status, target_url)
+    logging.debug(
+        "media request fresh action=%s requestId=%s provider=%s targetUrl=%s url=%s",
+        message["action"],
+        request_id,
+        status.get("provider"),
+        message.get("targetUrl"),
+        status.get("url"),
+    )
+    return jsonify(status)
+
+if sock:
+    @sock.route("/media/ws")
+    def media_ws_endpoint(ws):
+        media_ws_loop(ws)
+elif SimpleWebSocketServer:
+    @app.route("/media/ws", websocket=True)
+    def media_ws_endpoint():
+        ws = SimpleWebSocketServer.accept(request.environ)
+        media_ws_loop(ws)
+
+async def asgi_media_ws_endpoint(scope, receive, send):
+    global media_ws
+    message = await receive()
+    if message.get("type") != "websocket.connect":
+        return
+
+    await send({"type": "websocket.accept"})
+    ws = AsgiMediaWebSocket(send, asyncio.get_running_loop())
+    with media_lock:
+        media_ws = ws
+    logging.info("media websocket connected")
+
+    try:
+        while True:
+            message = await receive()
+            message_type = message.get("type")
+            if message_type == "websocket.disconnect":
+                logging.info("media websocket closed: code=%s", message.get("code"))
+                break
+            if message_type != "websocket.receive":
+                continue
+
+            raw = message.get("text")
+            if raw is None and message.get("bytes") is not None:
+                raw = message["bytes"].decode("utf-8")
+            if raw is None:
+                continue
+
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                logging.warning("media websocket received invalid JSON")
+                continue
+            if payload.get("type") == "media.response":
+                fulfill_media_request(payload)
+            else:
+                logging.debug("media websocket message type=%s", payload.get("type"))
+    finally:
+        with media_lock:
+            if media_ws is ws:
+                media_ws = None
+        logging.info("media websocket disconnected")
+
+def create_asgi_app():
+    if WsgiToAsgi is None:
+        raise RuntimeError("asgiref is required for ASGI production mode")
+
+    flask_asgi_app = WsgiToAsgi(app)
+
+    async def asgi_app(scope, receive, send):
+        if scope["type"] == "websocket" and scope.get("path") == "/media/ws":
+            await asgi_media_ws_endpoint(scope, receive, send)
+            return
+        await flask_asgi_app(scope, receive, send)
+
+    return asgi_app
 
 # -------------------------------
 # Call paw-org-protocol in Emacs
@@ -288,8 +625,9 @@ def run_server(database_path, temp_dir, port, host, username, password, clientid
     global wallabag_host, wallabag_username, wallabag_password, wallabag_clientid, wallabag_secret, paw, save_dir
 
     # Setup logging
+    log_level = getattr(logging, os.getenv('PAW_LOG_LEVEL', 'INFO').upper(), logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
@@ -318,6 +656,8 @@ def run_server(database_path, temp_dir, port, host, username, password, clientid
     port = int(port or os.getenv('PAW_PORT', 5001))
 
     logging.info(f"Starting PAW server on port {port}")
+    logging.info(f"Log level: {logging.getLevelName(log_level)}")
+    logging.info(f"Media websocket available: {websocket_available}")
     logging.info(f"Save directory: {save_dir}")
     if wallabag_host:
         logging.info(f"Wallabag integration enabled for: {wallabag_host}")
@@ -338,8 +678,27 @@ def run_server(database_path, temp_dir, port, host, username, password, clientid
 
     if server_type == 'production':
         try:
+            import uvicorn
+            access_log = env_bool('PAW_ACCESS_LOG', False)
+            logging.info("Starting server with uvicorn (production ASGI server)...")
+            logging.info(f"Uvicorn access log: {access_log}")
+            uvicorn.run(
+                create_asgi_app(),
+                host='0.0.0.0',
+                port=port,
+                log_level=logging.getLevelName(log_level).lower(),
+                access_log=access_log,
+            )
+        except ImportError as e:
+            logging.error(f"uvicorn/asgiref not available ({e}); install production dependencies")
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Error starting uvicorn server ({e})")
+            sys.exit(1)
+    elif server_type == 'waitress':
+        try:
             from waitress import serve
-            logging.info("Starting server with waitress (production WSGI server)...")
+            logging.info("Starting server with waitress (HTTP-only WSGI server)...")
             serve(app, host='0.0.0.0', port=port)
         except ImportError as e:
             logging.warning(f"waitress not available ({e}), falling back to Flask development server")
@@ -380,9 +739,9 @@ def main():
                        default=os.getenv('WALLABAG_SECRET'),
                        help='Wallabag client secret (env: WALLABAG_SECRET)')
     parser.add_argument('--server-type', type=str,
-                       choices=['flask', 'production'],
+                       choices=['flask', 'production', 'waitress'],
                        default=os.getenv('PAW_SERVER_TYPE', 'flask'),
-                       help='Server type to use: flask (dev) or production (waitress) (env: PAW_SERVER_TYPE)')
+                       help='Server type to use: flask, production (uvicorn ASGI), or waitress (HTTP-only WSGI) (env: PAW_SERVER_TYPE)')
 
     args = parser.parse_args()
 

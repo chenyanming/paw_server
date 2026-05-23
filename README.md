@@ -10,6 +10,7 @@ This repository contains the Python CLI tool and server components that work wit
 
 - Command line interface for dictionary searches and language processing
 - HTTP server for Emacs integration
+- Optional browser media control/status bridge for the PAW browser extension
 - Support for multiple languages (English, Japanese, Chinese)
 - Database-driven annotation and vocabulary management
 - Integration with external services like Wallabag
@@ -80,6 +81,8 @@ export PAW_DATABASE_PATH="/home/user/org/paw.sqlite"
 export PAW_SAVE_DIR="/tmp/"
 export PAW_PORT="5001"
 export PAW_SERVER_TYPE="production"
+export PAW_LOG_LEVEL="INFO"
+export PAW_ACCESS_LOG="false"
 export WALLABAG_HOST="https://example.com"
 export WALLABAG_USERNAME="your_username"
 export WALLABAG_PASSWORD="your_password"
@@ -93,8 +96,84 @@ paw server
 - `--database`: Path to SQLite database file (env: PAW_DATABASE_PATH)
 - `--save-dir`: Directory to save files (env: PAW_SAVE_DIR)
 - `--port`: Server port (env: PAW_PORT, default: 5001)
-- `--server-type`: Server type - 'flask' or 'production' (env: PAW_SERVER_TYPE, default: flask)
+- `--server-type`: Server type - 'flask', 'production', or 'waitress' (env: PAW_SERVER_TYPE, default: flask)
 - `--wallabag-*`: Wallabag configuration (env: WALLABAG_HOST, WALLABAG_USERNAME, etc.)
+
+### Browser Media Bridge
+
+`paw_server` can proxy browser media status and controls between local clients and the PAW browser extension.
+
+The bridge is opt-in from the browser extension popup/options. When enabled, the extension opens a WebSocket to:
+
+```text
+ws://localhost:5001/media/ws
+```
+
+Emacs and other local clients send requests to:
+
+```text
+POST http://localhost:5001/media/request
+```
+
+Example status request:
+
+```sh
+curl -s http://localhost:5001/media/request \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"status","targetUrl":"https://www.netflix.com/watch/12345","timeoutMs":800}'
+```
+
+Example control request:
+
+```sh
+curl -s http://localhost:5001/media/request \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"toggle","targetUrl":"https://www.netflix.com/watch/12345","timeoutMs":800}'
+```
+
+Supported actions:
+
+- `status`
+- `play`
+- `pause`
+- `toggle`
+- `seekRelative` with `deltaMs`
+- `seekAbsolute` with `positionMs`
+
+The response always has a media-shaped JSON body so polling clients can stay simple:
+
+```json
+{
+  "ok": true,
+  "source": "fresh",
+  "stale": false,
+  "provider": "netflix",
+  "mediaId": "browser:123:0:abcdef",
+  "url": "https://www.netflix.com/watch/12345",
+  "title": "Example",
+  "currentTimeMs": 10000,
+  "durationMs": 600000,
+  "remainingMs": 590000,
+  "paused": false,
+  "playbackRate": 1.0,
+  "canControl": true,
+  "updatedAtMs": 1710000000000,
+  "lastError": null
+}
+```
+
+If the extension is unavailable, times out, or no matching media tab is found, the server returns the last cached status for the same `targetUrl`. If there is no cached status, it returns an empty paused status with `source: "empty"` and `stale: true`. Browser media requests bound to a `targetUrl` do not fall back to unrelated tabs.
+
+Run the server in production mode for the media WebSocket:
+
+```sh
+export PAW_SERVER_TYPE=production
+export PAW_LOG_LEVEL=DEBUG
+export PAW_ACCESS_LOG=false
+python3 -m paw.cli server --server-type production
+```
+
+`production` uses Uvicorn/ASGI so normal HTTP endpoints and `/media/ws` share one port. The legacy `waitress` mode is still available for HTTP-only WSGI deployments, but it does not support `/media/ws`.
 
 ### Dictionary Operations
 
@@ -164,24 +243,24 @@ paw check_language --languages "english,chinese,japanese" \
 | `PAW_DATABASE_PATH` | Path to SQLite database | None |
 | `PAW_SAVE_DIR` | Directory to save files | `/tmp` |
 | `PAW_PORT` | Server port | `5001` |
-| `PAW_SERVER_TYPE` | Server type (flask/production) | `flask` |
+| `PAW_SERVER_TYPE` | Server type (flask/production/waitress) | `flask` |
+| `PAW_LOG_LEVEL` | Python logging level | `INFO` |
+| `PAW_ACCESS_LOG` | Enable Uvicorn per-request access logs in production mode | `false` |
 | `WALLABAG_HOST` | Wallabag server URL | None |
 | `WALLABAG_USERNAME` | Wallabag username | None |
 | `WALLABAG_PASSWORD` | Wallabag password | None |
 | `WALLABAG_CLIENTID` | Wallabag client ID | None |
 | `WALLABAG_SECRET` | Wallabag client secret | None |
 
-### Production Deployment with Waitress
+### Production Deployment
 
 ```sh
-# Install waitress
-pip install waitress
-
 # Set environment variables
 export PAW_DATABASE_PATH="/path/to/your/paw.sqlite"
 export PAW_SAVE_DIR="/var/www/paw/uploads/"
 export PAW_PORT="5001"
 export PAW_SERVER_TYPE="production"
+export PAW_ACCESS_LOG="false"
 
 # Configure Wallabag (optional)
 export WALLABAG_HOST="https://your-wallabag.com"
@@ -194,11 +273,13 @@ export WALLABAG_SECRET="your_client_secret"
 paw server
 ```
 
+`production` runs with Uvicorn/ASGI and supports both HTTP endpoints and the browser media WebSocket. Use `PAW_SERVER_TYPE=waitress` only if you need the old HTTP-only WSGI runtime.
+
 ## Features
 
 - **Enhanced Stability**: Improved error handling and automatic database reconnection
 - **Environment Variable Support**: All configuration via environment variables
-- **Production Server Support**: Better performance with waitress WSGI server
+- **Production Server Support**: Uvicorn/ASGI for HTTP and browser media WebSocket support; Waitress WSGI remains available for HTTP-only deployments
 - **Graceful Shutdown**: Proper cleanup on server shutdown
 - **Comprehensive Logging**: Logging to both console and file
 - **Thread Safety**: Safe concurrent database access
@@ -235,7 +316,9 @@ paw_server/
 
 - Python 3.10+
 - Flask & Flask-CORS for web server
-- Waitress for production WSGI server
+- Uvicorn and asgiref for production ASGI serving
+- simple-websocket for Flask/local WebSocket serving
+- Waitress for legacy HTTP-only WSGI serving
 - NLTK for natural language processing
 - MeCab and related Japanese processing libraries
 - Requests for HTTP client functionality
